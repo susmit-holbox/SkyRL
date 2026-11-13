@@ -308,6 +308,10 @@ def build_vllm_cli_args(cfg: SkyRLTrainConfig) -> Namespace:
         # Ray executor.
         args.weight_transfer_config = WeightTransferConfig(backend="neuron")
         args.distributed_executor_backend = "mp"
+        # SkyRL's worker extension (NewInferenceWorkerWrap) is a GPU-worker
+        # mixin; it is not compatible with the fork's NeuronWorker, which
+        # implements its own weight-transfer receive path. Do not apply it.
+        args.worker_extension_cls = None
     else:
         args.weight_transfer_config = WeightTransferConfig(
             backend=get_vllm_receive_backend(ie_cfg.weight_sync_backend, cfg.trainer.placement.colocate_all),
