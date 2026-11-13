@@ -200,10 +200,11 @@ megatron = [
 # PyPI. ``torch-neuronx`` is not a dependency of this extra and must be installed
 # explicitly (see `.agents/docs/backends/neuron.md`), so `--extra-index-url` alone does
 # not resolve it.
-# Everything CUDA/vLLM-only from ``skyrl-train`` -- ``vllm-router``, ``flash-attn``,
+# Everything CUDA/vLLM-only from ``skyrl-train`` -- ``flash-attn``,
 # ``flash-linear-attention``, ``causal-conv1d``, ``nixl`` -- is omitted, as is the
 # base ``[project].dependencies`` floor on transformers when a newer release is
-# required by the model on neuron (see the doc).
+# required by the model on neuron (see the doc). ``vllm-router`` is kept: the
+# ``vllm_neuron`` backend (vllm-neuron serving) still drives the vLLM server path.
 neuron = [
     "loguru",
     "tqdm",
@@ -232,6 +233,8 @@ neuron = [
     "uvicorn",
     "pybind11",
     "setuptools",
+    # Required by the ``vllm_neuron`` inference backend (vLLM server path).
+    "vllm-router; sys_platform == 'linux'",
 ]
 
 # Opt-in FlashAttention 4. NOT part of `megatron`, so the default install runs FA2.
