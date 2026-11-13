@@ -650,6 +650,26 @@ def validate_cfg(cfg: SkyRLTrainConfig):
             "Set placement.colocate_all=false."
         )
 
+    # vllm-neuron (vLLM serving on Trainium) pushes full weights through the fork's
+    # "neuron" weight-transfer backend over a StatelessProcessGroup. It has no CUDA
+    # IPC (so no colocation) and no LoRA-adapter serving on the engine.
+    if cfg.generator.inference_engine.backend == "vllm_neuron":
+        if cfg.generator.inference_engine.weight_sync_backend != "neuron":
+            raise ValueError(
+                "generator.inference_engine.backend='vllm_neuron' requires "
+                "generator.inference_engine.weight_sync_backend='neuron'."
+            )
+        if cfg.trainer.placement.colocate_all:
+            raise ValueError(
+                "generator.inference_engine.backend='vllm_neuron' does not support "
+                "placement.colocate_all=true (no CUDA IPC on Neuron)."
+            )
+        if cfg.trainer.policy.model.lora.rank > 0:
+            raise ValueError(
+                "generator.inference_engine.backend='vllm_neuron' does not serve LoRA "
+                "adapters; use full-weight sync (lora.rank=0 or merge_lora=true)."
+            )
+
     # Validate placement
     if cfg.trainer.placement.colocate_all:
         num_policy_gpus = cfg.trainer.placement.policy_num_gpus_per_node * cfg.trainer.placement.policy_num_nodes
@@ -1436,35 +1456,42 @@ class InfoActor:
         return ray.get_gpu_ids()[0]
 
 
-def _probe_bundle_placement(pg):
-    """Probe every bundle in a placement group to get (bundle_idx, node_id, gpu_id) tuples.
+def _probe_bundle_placement(pg, device_resource_key: str = "GPU"):
+    """Probe every bundle in a placement group to get (bundle_idx, node_id, device_id) tuples.
 
-    Spawns a lightweight InfoActor per bundle to discover physical GPU assignments,
-    then returns the tuples sorted by (node_id, gpu_id) for deterministic ordering.
+    Spawns a lightweight InfoActor per bundle to discover physical accelerator
+    assignments, then returns the tuples sorted by (node_id, device_id) for
+    deterministic ordering. For ``neuron_cores`` (vllm-neuron) there is no Ray
+    ``get_neuron_core_ids()`` API: the fork maps logical device ids to physical
+    cores via ``NEURON_VISIBLE_DEVICES``, so the logical bundle index is used as
+    the device id and only the node ids are resolved.
     """
     pg_data = placement_group_table(pg)
     num_bundles = len(pg_data["bundles"])
     bundle_to_node_ids = pg_data["bundles_to_node_id"]
 
-    info_actors = []
-    for i in range(num_bundles):
-        info_actors.append(
-            InfoActor.options(
-                num_cpus=0.01,
-                num_gpus=0.01,
-                resources=None,
-                scheduling_strategy=PlacementGroupSchedulingStrategy(
-                    placement_group=pg,
-                    placement_group_bundle_index=i,
-                ),
-            ).remote()
-        )
+    if device_resource_key == "neuron_cores":
+        device_ids = list(range(num_bundles))
+    else:
+        info_actors = []
+        for i in range(num_bundles):
+            info_actors.append(
+                InfoActor.options(
+                    num_cpus=0.01,
+                    num_gpus=0.01,
+                    resources=None,
+                    scheduling_strategy=PlacementGroupSchedulingStrategy(
+                        placement_group=pg,
+                        placement_group_bundle_index=i,
+                    ),
+                ).remote()
+            )
 
-    gpu_ids = ray.get([actor.get_gpu_id.remote() for actor in info_actors])
-    for actor in info_actors:
-        ray.kill(actor)
+        device_ids = ray.get([actor.get_gpu_id.remote() for actor in info_actors])
+        for actor in info_actors:
+            ray.kill(actor)
 
-    bundle_infos = [(i, bundle_to_node_ids[i], gpu_ids[i]) for i in range(num_bundles)]
+    bundle_infos = [(i, bundle_to_node_ids[i], device_ids[i]) for i in range(num_bundles)]
     return sorted(bundle_infos, key=lambda x: (x[1], x[2]))
 
 
@@ -1486,13 +1513,14 @@ class ResolvedPlacementGroup:
         num_gpus_per_node: Number of GPUs per node (assumes uniform distribution).
     """
 
-    def __init__(self, pg: PlacementGroup):
+    def __init__(self, pg: PlacementGroup, device_resource_key: str = "GPU"):
         self.pg = pg
+        self.device_resource_key = device_resource_key
         self._bundle_placement = None
 
     def _get_bundle_placement(self):
         if self._bundle_placement is None:
-            self._bundle_placement = _probe_bundle_placement(self.pg)
+            self._bundle_placement = _probe_bundle_placement(self.pg, self.device_resource_key)
         return self._bundle_placement
 
     @functools.cached_property

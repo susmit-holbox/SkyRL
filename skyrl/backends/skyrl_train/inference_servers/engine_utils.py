@@ -172,7 +172,10 @@ def get_neuron_sampling_params(sampling_params: Union[SamplingParams, DictConfig
 
 
 def get_sampling_params_for_backend(backend: str, sampling_params: Union[SamplingParams, DictConfig]) -> Dict[str, Any]:
-    if backend == "vllm":
+    if backend in ("vllm", "vllm_neuron"):
+        # vllm-neuron serves the same OpenAI-compatible API as vLLM, so it uses
+        # the same sampling-params mapping (only the native in-process "neuron"
+        # engine maps to transformers ``generate`` kwargs).
         return get_vllm_sampling_params(sampling_params)
     elif backend == "neuron":
         # The native neuron engine maps SkyRL sampling params to transformers

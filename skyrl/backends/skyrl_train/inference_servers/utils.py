@@ -47,6 +47,15 @@ logger = logging.getLogger(__name__)
 VLLM_LOGPROBS_MODE = "processed_logprobs"
 
 
+def get_ray_device_resource_key(backend: str) -> str:
+    """Ray resource key for one accelerator slot of an inference-engine bundle.
+
+    vLLM-Neuron advertises NeuronCores under the custom resource ``neuron_cores``
+    (``NeuronPlatform.ray_device_key``); CUDA vLLM uses ``GPU``.
+    """
+    return "neuron_cores" if backend == "vllm_neuron" else "GPU"
+
+
 def _serialized_fp8_ignored_layers(model_path: Optional[str], wire_format: str = BLOCKWISE_FP8) -> list[str]:
     if not model_path:
         raise ValueError("A model path is required when FP8 weight sync is enabled")
@@ -227,7 +236,10 @@ def _base_vllm_cli_args(model_path: str, ie_cfg: InferenceEngineConfig, seed: in
     # NOTE: mutating current_platform.device_type relies on vLLM 0.20.2's singleton
     # initialization where instance attrs shadow class attrs. This should be re-verified on vLLM bumps.
     if not current_platform.device_type:
-        current_platform.device_type = "cuda"
+        # Pin the platform's device type so ``DeviceConfig.__post_init__``
+        # succeeds during arg parsing on a device-less driver (head) node.
+        # vllm-neuron serves on "neuron"; everything else assumes CUDA.
+        current_platform.device_type = "neuron" if ie_cfg.backend == "vllm_neuron" else "cuda"
 
     # Create common CLI args namespace
     parser = FlexibleArgumentParser()
@@ -289,9 +301,17 @@ def build_vllm_cli_args(cfg: SkyRLTrainConfig) -> Namespace:
     # non-colocated weight sync opts into offloading the KV cache around the sync.
     args.enable_sleep_mode = cfg.trainer.placement.colocate_all or ie_cfg.offload_kv_for_weight_sync
     args.enable_return_routed_experts = ie_cfg.enable_return_routed_experts
-    args.weight_transfer_config = WeightTransferConfig(
-        backend=get_vllm_receive_backend(ie_cfg.weight_sync_backend, cfg.trainer.placement.colocate_all),
-    )
+    if ie_cfg.backend == "vllm_neuron":
+        # vllm-neuron pushes weights through the fork's "neuron" weight-transfer
+        # backend (registered by NeuronPlatform) and serves with the
+        # multiprocessing executor — Neuron supports "mp"/"uni" only, never the
+        # Ray executor.
+        args.weight_transfer_config = WeightTransferConfig(backend="neuron")
+        args.distributed_executor_backend = "mp"
+    else:
+        args.weight_transfer_config = WeightTransferConfig(
+            backend=get_vllm_receive_backend(ie_cfg.weight_sync_backend, cfg.trainer.placement.colocate_all),
+        )
     # Sample-support capture asks for one logprob per top-k candidate, post-filter, so the
     # -inf entries that mark filtered candidates survive to the capture path.
     if ie_cfg.enable_return_sample_support_set:

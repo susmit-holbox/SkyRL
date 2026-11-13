@@ -1326,8 +1326,9 @@ class InferenceEngineConfig(BaseConfig):
     num_engines: int = 1
     """Number of inference engines to launch when ``run_engines_locally=True``."""
     backend: str = "vllm"
-    """Inference engine backend: ``"vllm"`` or ``"neuron"`` (native transformers
-    ``model.generate`` on TorchNeuron)."""
+    """Inference engine backend: ``"vllm"`` (CUDA vLLM), ``"neuron"`` (native transformers
+    ``model.generate`` on TorchNeuron), or ``"vllm_neuron"`` (the vllm-neuron fork serving
+    on Trainium through vLLM's Neuron platform)."""
     weight_sync_backend: str = "nccl"
     """Backend used for weight synchronization.
     Use ``"nccl"`` (colocated ``nccl`` uses CUDA IPC internally), or ``"delta"`` for checkpoint-delta sync through

@@ -28,6 +28,7 @@ from .utils import (
     build_vllm_cli_args,
     get_pd_cli_args,
     get_pd_p2p_connector_name,
+    get_ray_device_resource_key,
 )
 from .vllm_router import VLLMRouter
 
@@ -91,6 +92,7 @@ def create_inference_servers(
 
     gpus_per_server = ie_cfg.tensor_parallel_size * ie_cfg.pipeline_parallel_size
     is_colocated = placement_group is not None
+    device_res = get_ray_device_resource_key(ie_cfg.backend)
 
     if ie_cfg.enable_pd:
         # Role-specific engine kwargs (mutually exclusive with engine_init_kwargs;
@@ -109,16 +111,16 @@ def create_inference_servers(
         # decode groups so that bundle offsets index into a valid range.
         if placement_group is None:
             prefill_total_gpus = num_prefill * gpus_per_server * servers_per_group
-            prefill_bundles = [{"GPU": 1, "CPU": 1} for _ in range(prefill_total_gpus)]
+            prefill_bundles = [{device_res: 1, "CPU": 1} for _ in range(prefill_total_gpus)]
             raw_prefill_pg = ray_placement_group(prefill_bundles, strategy="PACK")
             get_ray_pg_ready_with_timeout(raw_prefill_pg, timeout=SKYRL_RAY_PG_TIMEOUT_IN_S)
-            prefill_pg = ResolvedPlacementGroup(raw_prefill_pg)
+            prefill_pg = ResolvedPlacementGroup(raw_prefill_pg, device_resource_key=device_res)
 
             decode_total_gpus = num_decode * gpus_per_server * servers_per_group
-            decode_bundles = [{"GPU": 1, "CPU": 1} for _ in range(decode_total_gpus)]
+            decode_bundles = [{device_res: 1, "CPU": 1} for _ in range(decode_total_gpus)]
             raw_decode_pg = ray_placement_group(decode_bundles, strategy="PACK")
             get_ray_pg_ready_with_timeout(raw_decode_pg, timeout=SKYRL_RAY_PG_TIMEOUT_IN_S)
-            decode_pg = ResolvedPlacementGroup(raw_decode_pg)
+            decode_pg = ResolvedPlacementGroup(raw_decode_pg, device_resource_key=device_res)
         else:
             prefill_pg = placement_group
             decode_pg = placement_group
@@ -137,7 +139,7 @@ def create_inference_servers(
                 mooncake_bootstrap_base_port=MOONCAKE_BOOTSTRAP_BASE_PORT + i * servers_per_group * SERVER_PORT_STRIDE,
                 distributed_executor_backend=ie_cfg.distributed_executor_backend,
                 enable_ray_prometheus_stats=ie_cfg.enable_ray_prometheus_stats,
-                use_expandable_segments=ie_cfg.use_expandable_segments,
+                use_expandable_segments=ie_cfg.use_expandable_segments, device_resource_key=device_res,
             )
             for i in range(num_prefill)
         ]
@@ -161,7 +163,7 @@ def create_inference_servers(
                 + (num_prefill + i) * servers_per_group * SERVER_PORT_STRIDE,
                 distributed_executor_backend=ie_cfg.distributed_executor_backend,
                 enable_ray_prometheus_stats=ie_cfg.enable_ray_prometheus_stats,
-                use_expandable_segments=ie_cfg.use_expandable_segments,
+                use_expandable_segments=ie_cfg.use_expandable_segments, device_resource_key=device_res,
             )
             for i in range(num_decode)
         ]
@@ -223,10 +225,10 @@ def create_inference_servers(
         # that bundle offsets index into a valid range.
         if placement_group is None:
             total_gpus = ie_cfg.num_engines * gpus_per_server * ie_cfg.data_parallel_size
-            bundles = [{"GPU": 1, "CPU": 1} for _ in range(total_gpus)]
+            bundles = [{device_res: 1, "CPU": 1} for _ in range(total_gpus)]
             raw_pg = ray_placement_group(bundles, strategy="PACK")
             get_ray_pg_ready_with_timeout(raw_pg, timeout=SKYRL_RAY_PG_TIMEOUT_IN_S)
-            placement_group = ResolvedPlacementGroup(raw_pg)
+            placement_group = ResolvedPlacementGroup(raw_pg, device_resource_key=device_res)
 
         server_groups = [
             ServerGroup(
@@ -238,7 +240,7 @@ def create_inference_servers(
                 distributed_executor_backend=ie_cfg.distributed_executor_backend,
                 placement_group_bundle_offset=i * gpus_per_server * ie_cfg.data_parallel_size,
                 enable_ray_prometheus_stats=ie_cfg.enable_ray_prometheus_stats,
-                use_expandable_segments=ie_cfg.use_expandable_segments,
+                use_expandable_segments=ie_cfg.use_expandable_segments, device_resource_key=device_res,
             )
             for i in range(ie_cfg.num_engines)
         ]
