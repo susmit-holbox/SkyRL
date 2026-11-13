@@ -10,6 +10,7 @@ it to a ``TrainerWeightTransferEngine`` (``weight_senders.py``) whose
 ``ipc``          CUDA IPC handles; colocated (``placement.colocate_all``)
 ``delta``        compressed checkpoint deltas via disk / ``gs://`` / ``s3://``
 ``sharded_rdt``  the inference workers pull slices over NIXL
+``neuron``       the vllm-neuron fork's weight-transfer backend (Trainium)
 ===============  ==========================================================
 
 This package imports no vLLM at module scope: half the CPU suite runs without the
@@ -31,6 +32,9 @@ _VLLM_RECEIVE_BACKENDS = {
     "ipc": "skyrl_ipc",
     "delta": "delta",
     "sharded_rdt": "sharded_rdt",
+    # Registered by the vllm-neuron fork's platform (NeuronPlatform), not by
+    # SkyRL: both the receive and trainer factories already know "neuron".
+    "neuron": "neuron",
 }
 
 
@@ -44,6 +48,8 @@ def get_transfer_strategy(weight_sync_backend: str, colocate_all: bool) -> str:
         return "sharded_rdt"
     if weight_sync_backend == "delta":
         return "delta"
+    if weight_sync_backend == "neuron":
+        return "neuron"
     if weight_sync_backend == "nccl" and colocate_all:
         return "ipc"
     return "nccl"

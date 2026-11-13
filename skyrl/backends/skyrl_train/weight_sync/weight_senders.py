@@ -381,6 +381,33 @@ def _build_sender_init_info(
             rdt_init_payloads,
         )
 
+    if backend == "neuron":
+        # The vllm-neuron fork registers "neuron" in vLLM's
+        # WeightTransferTrainerFactory (NeuronPlatform.pre_register_and_update),
+        # so trainer_init below dispatches to NeuronTrainerWeightTransferEngine.
+        # Its init-info mirrors the NCCL sender: rank 0 opens the model-update
+        # endpoint and broadcasts every parameter over a StatelessProcessGroup.
+        import ray
+
+        from vllm_neuron.vllm.weight_transfer.neuron_trainer import (
+            NeuronTrainerInitInfo,
+        )
+
+        master_address = ray._private.services.get_node_ip_address()
+        with socket.socket() as sock:
+            sock.bind(("", 0))
+            master_port = sock.getsockname()[1]
+        return (
+            NeuronTrainerInitInfo(
+                master_address=master_address,
+                master_port=master_port,
+                # Every inference worker plus the single trainer sender (rank 0).
+                world_size=inference_world_size + 1,
+                rank=rank,
+            ),
+            None,
+        )
+
     raise ValueError(f"Unknown weight sync backend {backend!r}.")
 
 
