@@ -307,7 +307,10 @@ def build_vllm_cli_args(cfg: SkyRLTrainConfig) -> Namespace:
         # multiprocessing executor — Neuron supports "mp"/"uni" only, never the
         # Ray executor.
         args.weight_transfer_config = WeightTransferConfig(backend="neuron")
-        args.distributed_executor_backend = "mp"
+        # Use the uniproc executor: the vllm-neuron multiproc executor resolves
+        # the worker to the GPU worker (not NeuronWorker). The uniproc executor
+        # runs the NeuronWorker in-process and is correct for TP=1 serving.
+        args.distributed_executor_backend = "uni"
         # SkyRL's worker extension (NewInferenceWorkerWrap) is a GPU-worker
         # mixin; it is not compatible with the fork's NeuronWorker, which
         # implements its own weight-transfer receive path. Do not apply it.
